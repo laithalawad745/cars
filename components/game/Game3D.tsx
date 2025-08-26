@@ -1,5 +1,5 @@
 // =====================================
-// 📁 components/game/Game3D.tsx - Improved Characters
+// 📁 components/game/Game3D.tsx - Improved Realistic Characters & Movement
 // =====================================
 'use client';
 
@@ -28,21 +28,28 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
     renderer: null as THREE.WebGLRenderer | null,
     clock: new THREE.Clock(),
     hand: null as THREE.Group | null,
-    otherPlayers: new Map<string, THREE.Group>(),
+    otherPlayers: new Map<string, any>(),
     animationId: null as number | null
   });
 
-  // Player state
+  // Player state with realistic physics
   const playerState = useRef({
     position: { x: 0, y: 1.6, z: 5 },
     rotation: { x: 0, y: 0 },
-    velocity: { x: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+    acceleration: { x: 0, z: 0 },
+    isGrounded: true,
+    isWalking: false,
+    walkCycle: 0,
+    bobAmount: 0,
     lastUpdate: 0,
     keys: {
       forward: false,
       backward: false,
       left: false,
-      right: false
+      right: false,
+      shift: false, // For running
+      space: false  // For jumping
     }
   });
 
@@ -76,24 +83,39 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
     camera.position.set(0, 1.6, 5);
     gameRefs.current.camera = camera;
 
-    // Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    // Renderer with better quality
+    const renderer = new THREE.WebGLRenderer({ 
+      antialias: true,
+      powerPreference: "high-performance"
+    });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
     mountRef.current!.appendChild(renderer.domElement);
     gameRefs.current.renderer = renderer;
 
-    // Lights
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    // Enhanced Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
     scene.add(ambientLight);
 
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
     directionalLight.position.set(10, 20, 10);
     directionalLight.castShadow = true;
-    directionalLight.shadow.mapSize.width = 2048;
-    directionalLight.shadow.mapSize.height = 2048;
+    directionalLight.shadow.mapSize.width = 4096;
+    directionalLight.shadow.mapSize.height = 4096;
+    directionalLight.shadow.camera.near = 0.5;
+    directionalLight.shadow.camera.far = 50;
+    directionalLight.shadow.camera.left = -20;
+    directionalLight.shadow.camera.right = 20;
+    directionalLight.shadow.camera.top = 20;
+    directionalLight.shadow.camera.bottom = -20;
     scene.add(directionalLight);
+
+    // Add hemisphere light for better ambient
+    const hemiLight = new THREE.HemisphereLight(0x87CEEB, 0x545454, 0.4);
+    scene.add(hemiLight);
 
     // Environment
     createEnvironment(scene);
@@ -107,11 +129,16 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
   };
 
   const createEnvironment = (scene: THREE.Scene) => {
-    // Ground
-    const groundGeometry = new THREE.PlaneGeometry(20, 20);
+    // Textured Ground
+    const groundGeometry = new THREE.PlaneGeometry(30, 30);
+    const groundTexture = new THREE.TextureLoader().load('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==');
+    groundTexture.repeat.set(30, 30);
+    groundTexture.wrapS = groundTexture.wrapT = THREE.RepeatWrapping;
+    
     const groundMaterial = new THREE.MeshStandardMaterial({ 
       color: 0x3a5f3a,
-      roughness: 0.8
+      roughness: 0.8,
+      metalness: 0.2
     });
     const ground = new THREE.Mesh(groundGeometry, groundMaterial);
     ground.rotation.x = -Math.PI / 2;
@@ -119,12 +146,16 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
     scene.add(ground);
 
     // Grid
-    const gridHelper = new THREE.GridHelper(20, 20, 0x444444, 0x222222);
+    const gridHelper = new THREE.GridHelper(30, 30, 0x444444, 0x222222);
     gridHelper.position.y = 0.01;
     scene.add(gridHelper);
 
-    // Walls
-    const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x8B7355 });
+    // Walls with texture
+    const wallMaterial = new THREE.MeshStandardMaterial({ 
+      color: 0x8B7355,
+      roughness: 0.9
+    });
+    
     const createWall = (width: number, height: number, depth: number, x: number, y: number, z: number) => {
       const wall = new THREE.Mesh(
         new THREE.BoxGeometry(width, height, depth),
@@ -136,311 +167,666 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
       scene.add(wall);
     };
 
-    createWall(20, 5, 0.5, 0, 2.5, -10);
-    createWall(20, 5, 0.5, 0, 2.5, 10);
-    createWall(0.5, 5, 20, 10, 2.5, 0);
-    createWall(0.5, 5, 20, -10, 2.5, 0);
+    createWall(30, 5, 0.5, 0, 2.5, -15);
+    createWall(30, 5, 0.5, 0, 2.5, 15);
+    createWall(0.5, 5, 30, 15, 2.5, 0);
+    createWall(0.5, 5, 30, -15, 2.5, 0);
 
-    // Central platform
-    const platformGeometry = new THREE.CylinderGeometry(3, 3, 0.2, 32);
+    // Enhanced Central platform
+    const platformGeometry = new THREE.CylinderGeometry(3, 3, 0.3, 64);
     const platformMaterial = new THREE.MeshStandardMaterial({ 
       color: 0xFFD700,
-      metalness: 0.5
+      metalness: 0.7,
+      roughness: 0.3
     });
     const platform = new THREE.Mesh(platformGeometry, platformMaterial);
-    platform.position.y = 0.1;
+    platform.position.y = 0.15;
+    platform.castShadow = true;
     platform.receiveShadow = true;
     scene.add(platform);
+
+    // Add some decorative elements
+    for(let i = 0; i < 5; i++) {
+      const angle = (i / 5) * Math.PI * 2;
+      const pillar = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.3, 0.3, 3, 16),
+        new THREE.MeshStandardMaterial({ color: 0x666666 })
+      );
+      pillar.position.set(Math.cos(angle) * 8, 1.5, Math.sin(angle) * 8);
+      pillar.castShadow = true;
+      scene.add(pillar);
+    }
   };
 
   const createPlayerHand = (scene: THREE.Scene, camera: THREE.PerspectiveCamera) => {
     const handGroup = new THREE.Group();
     
-    // Arm
-    const armGeometry = new THREE.BoxGeometry(0.15, 0.6, 0.15);
-    const skinMaterial = new THREE.MeshStandardMaterial({ color: 0xffdbac });
+    // Realistic Arm
+    const armGeometry = new THREE.CylinderGeometry(0.08, 0.12, 0.6, 12);
+    const skinMaterial = new THREE.MeshStandardMaterial({ 
+      color: 0xffdbac,
+      roughness: 0.7
+    });
     const arm = new THREE.Mesh(armGeometry, skinMaterial);
     arm.position.set(0.4, -0.3, -0.5);
     arm.rotation.x = -0.3;
+    arm.rotation.z = 0.1;
+    arm.castShadow = true;
     handGroup.add(arm);
 
-    // Hand
-    const handGeometry = new THREE.BoxGeometry(0.2, 0.2, 0.1);
+    // Realistic Hand
+    const handGeometry = new THREE.BoxGeometry(0.15, 0.2, 0.08);
     const hand = new THREE.Mesh(handGeometry, skinMaterial);
     hand.position.set(0.4, -0.5, -0.6);
+    hand.rotation.x = -0.2;
     handGroup.add(hand);
 
-    // Part in hand - FIXED to show correct shape
-    const partMesh = createCorrectPartMesh(playerPart);
+    // Fingers
+    for(let i = 0; i < 4; i++) {
+      const finger = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.015, 0.015, 0.08, 6),
+        skinMaterial
+      );
+      finger.position.set(0.35 + i * 0.03, -0.58, -0.62);
+      finger.rotation.x = -0.3;
+      handGroup.add(finger);
+    }
+
+    // Thumb
+    const thumb = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.02, 0.02, 0.06, 6),
+      skinMaterial
+    );
+    thumb.position.set(0.45, -0.52, -0.58);
+    thumb.rotation.z = 0.5;
+    handGroup.add(thumb);
+
+    // Part in hand
+    const partMesh = createRealisticPartMesh(playerPart);
     partMesh.position.set(0.4, -0.4, -0.7);
-    partMesh.scale.set(0.3, 0.3, 0.3);
+    partMesh.scale.set(0.25, 0.25, 0.25);
     handGroup.add(partMesh);
 
     camera.add(handGroup);
     gameRefs.current.hand = handGroup;
   };
 
-  // Create correct part mesh with proper shapes
-  const createCorrectPartMesh = (partType: string): THREE.Group => {
+  // Create more realistic part meshes
+  const createRealisticPartMesh = (partType: string): THREE.Group => {
     const group = new THREE.Group();
 
     switch(partType) {
       case 'chassis':
-        // Car frame shape
-        const chassisBody = new THREE.BoxGeometry(2, 0.3, 1);
+        // Detailed car frame
+        const chassisGroup = new THREE.Group();
+        
+        // Main body
+        const bodyShape = new THREE.Shape();
+        bodyShape.moveTo(-1, 0);
+        bodyShape.lineTo(1, 0);
+        bodyShape.lineTo(0.8, 0.3);
+        bodyShape.lineTo(-0.8, 0.3);
+        
+        const bodyGeometry = new THREE.ExtrudeGeometry(bodyShape, {
+          depth: 0.5,
+          bevelEnabled: true,
+          bevelThickness: 0.05,
+          bevelSize: 0.05
+        });
+        
         const chassisMat = new THREE.MeshStandardMaterial({ 
           color: 0xFFA500,
-          metalness: 0.3
+          metalness: 0.6,
+          roughness: 0.4
         });
-        const chassisMesh = new THREE.Mesh(chassisBody, chassisMat);
+        const chassisMesh = new THREE.Mesh(bodyGeometry, chassisMat);
+        chassisGroup.add(chassisMesh);
         
-        // Add cabin shape
-        const cabin = new THREE.BoxGeometry(1, 0.4, 0.8);
-        const cabinMesh = new THREE.Mesh(cabin, chassisMat);
-        cabinMesh.position.y = 0.35;
-        chassisMesh.add(cabinMesh);
+        // Cabin
+        const cabinGeo = new THREE.BoxGeometry(0.8, 0.4, 0.6);
+        const cabin = new THREE.Mesh(cabinGeo, chassisMat);
+        cabin.position.y = 0.4;
+        chassisGroup.add(cabin);
         
-        group.add(chassisMesh);
+        // Windows
+        const windowMat = new THREE.MeshStandardMaterial({ 
+          color: 0x333333,
+          metalness: 0.8,
+          roughness: 0.1
+        });
+        const windowGeo = new THREE.BoxGeometry(0.7, 0.2, 0.55);
+        const windows = new THREE.Mesh(windowGeo, windowMat);
+        windows.position.y = 0.45;
+        chassisGroup.add(windows);
+        
+        group.add(chassisGroup);
         break;
 
       case 'engine':
-        // Engine block with cylinders
+        // Detailed engine block
+        const engineGroup = new THREE.Group();
+        
         const engineBlock = new THREE.BoxGeometry(0.8, 0.6, 0.8);
         const engineMat = new THREE.MeshStandardMaterial({ 
-          color: 0xFF0000,
-          metalness: 0.7
+          color: 0xCC0000,
+          metalness: 0.9,
+          roughness: 0.3
         });
         const engineMesh = new THREE.Mesh(engineBlock, engineMat);
+        engineGroup.add(engineMesh);
         
-        // Add cylinders
-        const cylinderGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.3);
+        // Cylinders with pistons
+        const cylinderGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.35, 12);
         for (let i = 0; i < 4; i++) {
           const cylinder = new THREE.Mesh(cylinderGeo, engineMat);
           cylinder.position.set(
-            (i % 2) * 0.2 - 0.1,
+            (i % 2) * 0.25 - 0.125,
             0.4,
-            Math.floor(i / 2) * 0.2 - 0.1
+            Math.floor(i / 2) * 0.25 - 0.125
           );
-          engineMesh.add(cylinder);
+          engineGroup.add(cylinder);
+          
+          // Piston
+          const piston = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.06, 0.06, 0.1, 8),
+            new THREE.MeshStandardMaterial({ color: 0x666666, metalness: 1 })
+          );
+          piston.position.copy(cylinder.position);
+          piston.position.y += 0.15;
+          engineGroup.add(piston);
         }
         
-        group.add(engineMesh);
+        // Exhaust pipes
+        const exhaustGeo = new THREE.CylinderGeometry(0.04, 0.05, 0.4, 8);
+        const exhaustMat = new THREE.MeshStandardMaterial({ 
+          color: 0x444444,
+          metalness: 0.9
+        });
+        for(let i = 0; i < 2; i++) {
+          const exhaust = new THREE.Mesh(exhaustGeo, exhaustMat);
+          exhaust.rotation.z = Math.PI / 2;
+          exhaust.position.set(0.5, i * 0.15 - 0.1, 0);
+          engineGroup.add(exhaust);
+        }
+        
+        group.add(engineGroup);
         break;
 
       case 'gearbox':
-        // Gearbox with gears
-        const gearboxBody = new THREE.BoxGeometry(0.5, 0.5, 0.7);
+        // Detailed gearbox
+        const gearboxGroup = new THREE.Group();
+        
+        // Main housing
+        const housingGeo = new THREE.BoxGeometry(0.5, 0.5, 0.7);
         const gearboxMat = new THREE.MeshStandardMaterial({ 
-          color: 0x0000FF,
-          metalness: 0.5
+          color: 0x0066CC,
+          metalness: 0.7,
+          roughness: 0.4
         });
-        const gearboxMesh = new THREE.Mesh(gearboxBody, gearboxMat);
+        const housing = new THREE.Mesh(housingGeo, gearboxMat);
+        gearboxGroup.add(housing);
         
-        // Add gear
-        const gearGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.05, 16);
-        const gear = new THREE.Mesh(gearGeo, gearboxMat);
-        gear.position.y = 0.3;
-        gear.rotation.x = Math.PI / 2;
-        gearboxMesh.add(gear);
+        // Gears (visible through "window")
+        const gearMat = new THREE.MeshStandardMaterial({ 
+          color: 0xCCCCCC,
+          metalness: 0.95,
+          roughness: 0.2
+        });
         
-        // Gear stick
-        const stickGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.3);
-        const stick = new THREE.Mesh(stickGeo, gearboxMat);
-        stick.position.y = 0.4;
-        gearboxMesh.add(stick);
+        for(let i = 0; i < 3; i++) {
+          const gearOuter = new THREE.TorusGeometry(0.12 - i*0.03, 0.02, 4, 16);
+          const gear = new THREE.Mesh(gearOuter, gearMat);
+          gear.position.y = 0.3;
+          gear.position.z = i * 0.1 - 0.1;
+          gear.rotation.x = Math.PI / 2;
+          gearboxGroup.add(gear);
+          
+          // Gear teeth
+          for(let j = 0; j < 8; j++) {
+            const tooth = new THREE.Mesh(
+              new THREE.BoxGeometry(0.02, 0.04, 0.02),
+              gearMat
+            );
+            const angle = (j / 8) * Math.PI * 2;
+            tooth.position.x = Math.cos(angle) * (0.12 - i*0.03);
+            tooth.position.z = Math.sin(angle) * (0.12 - i*0.03) + i * 0.1 - 0.1;
+            tooth.position.y = 0.3;
+            gearboxGroup.add(tooth);
+          }
+        }
         
-        group.add(gearboxMesh);
+        // Shift lever
+        const leverGeo = new THREE.CylinderGeometry(0.02, 0.03, 0.25, 8);
+        const lever = new THREE.Mesh(leverGeo, gearboxMat);
+        lever.position.y = 0.45;
+        lever.rotation.z = 0.2;
+        gearboxGroup.add(lever);
+        
+        // Lever knob
+        const knobGeo = new THREE.SphereGeometry(0.05, 12, 8);
+        const knob = new THREE.Mesh(knobGeo, 
+          new THREE.MeshStandardMaterial({ color: 0x222222 })
+        );
+        knob.position.y = 0.58;
+        knob.position.x = 0.05;
+        gearboxGroup.add(knob);
+        
+        group.add(gearboxGroup);
         break;
 
       case 'wheel':
-        // Realistic wheel
-        const wheelGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.15, 32);
+        // Ultra-realistic wheel
+        const wheelGroup = new THREE.Group();
+        
+        // Tire with tread pattern
+        const tireGeo = new THREE.TorusGeometry(0.35, 0.12, 8, 24);
         const tireMat = new THREE.MeshStandardMaterial({ 
           color: 0x1a1a1a,
-          roughness: 0.9
+          roughness: 0.95,
+          metalness: 0.1
         });
-        const wheel = new THREE.Mesh(wheelGeo, tireMat);
-        wheel.rotation.z = Math.PI / 2;
+        const tire = new THREE.Mesh(tireGeo, tireMat);
+        wheelGroup.add(tire);
+        
+        // Tread pattern
+        for(let i = 0; i < 16; i++) {
+          const tread = new THREE.Mesh(
+            new THREE.BoxGeometry(0.08, 0.02, 0.24),
+            tireMat
+          );
+          const angle = (i / 16) * Math.PI * 2;
+          tread.position.x = Math.cos(angle) * 0.35;
+          tread.position.z = Math.sin(angle) * 0.35;
+          tread.rotation.y = angle;
+          wheelGroup.add(tread);
+        }
         
         // Rim
-        const rimGeo = new THREE.CylinderGeometry(0.25, 0.25, 0.16, 16);
+        const rimGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.1, 32);
         const rimMat = new THREE.MeshStandardMaterial({ 
-          color: 0xC0C0C0,
-          metalness: 0.9
+          color: 0xDDDDDD,
+          metalness: 0.95,
+          roughness: 0.1
         });
         const rim = new THREE.Mesh(rimGeo, rimMat);
-        wheel.add(rim);
+        rim.rotation.z = Math.PI / 2;
+        wheelGroup.add(rim);
         
-        // Spokes
-        const spokeGeo = new THREE.BoxGeometry(0.4, 0.05, 0.17);
-        const spoke1 = new THREE.Mesh(spokeGeo, rimMat);
-        const spoke2 = new THREE.Mesh(spokeGeo, rimMat);
-        spoke2.rotation.z = Math.PI / 2;
-        wheel.add(spoke1);
-        wheel.add(spoke2);
+        // Spokes (5-spoke design)
+        for(let i = 0; i < 5; i++) {
+          const spokeGeo = new THREE.BoxGeometry(0.35, 0.05, 0.12);
+          const spoke = new THREE.Mesh(spokeGeo, rimMat);
+          spoke.rotation.y = (i / 5) * Math.PI * 2;
+          wheelGroup.add(spoke);
+        }
         
-        group.add(wheel);
+        // Center cap
+        const capGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.12, 16);
+        const cap = new THREE.Mesh(capGeo, 
+          new THREE.MeshStandardMaterial({ 
+            color: 0x333333,
+            metalness: 0.8
+          })
+        );
+        cap.rotation.z = Math.PI / 2;
+        wheelGroup.add(cap);
+        
+        // Valve stem
+        const valveGeo = new THREE.CylinderGeometry(0.01, 0.01, 0.03, 6);
+        const valve = new THREE.Mesh(valveGeo, 
+          new THREE.MeshStandardMaterial({ color: 0x666666 })
+        );
+        valve.position.set(0.3, 0, 0);
+        valve.rotation.z = Math.PI / 2;
+        wheelGroup.add(valve);
+        
+        group.add(wheelGroup);
         break;
     }
 
     return group;
   };
 
+  // Create realistic humanoid characters
+  const createRealisticCharacter = (player: any): THREE.Group => {
+    const characterGroup = new THREE.Group();
+    characterGroup.userData = { 
+      animations: {},
+      mixer: new THREE.AnimationMixer(characterGroup)
+    };
+    
+    // Character colors based on player
+    const skinTone = new THREE.Color().setHSL(0.05, 0.5, 0.65 + Math.random() * 0.15);
+    const clothingColor = new THREE.Color().setHSL(Math.random(), 0.6, 0.4);
+    
+    const skinMat = new THREE.MeshStandardMaterial({ 
+      color: skinTone,
+      roughness: 0.7
+    });
+    
+    const clothMat = new THREE.MeshStandardMaterial({ 
+      color: clothingColor,
+      roughness: 0.8
+    });
+    
+    // === TORSO (with realistic shape) ===
+    const torsoShape = new THREE.Shape();
+    torsoShape.moveTo(-0.25, 0);
+    torsoShape.lineTo(0.25, 0);
+    torsoShape.lineTo(0.2, 0.6);
+    torsoShape.lineTo(-0.2, 0.6);
+    
+    const torsoGeo = new THREE.ExtrudeGeometry(torsoShape, {
+      depth: 0.15,
+      bevelEnabled: true,
+      bevelThickness: 0.05,
+      bevelSize: 0.05
+    });
+    
+    const torso = new THREE.Mesh(torsoGeo, clothMat);
+    torso.position.y = 0.3;
+    torso.castShadow = true;
+    torso.receiveShadow = true;
+    characterGroup.add(torso);
+    
+    // === HEAD (realistic proportions) ===
+    const headGeo = new THREE.SphereGeometry(0.15, 16, 12);
+    const head = new THREE.Mesh(headGeo, skinMat);
+    head.position.y = 0.85;
+    head.scale.y = 1.1; // Slightly elongated
+    head.castShadow = true;
+    characterGroup.add(head);
+    
+    // Face features
+    const eyeMat = new THREE.MeshStandardMaterial({ 
+      color: 0xffffff,
+      emissive: 0x111111
+    });
+    const pupilMat = new THREE.MeshStandardMaterial({ 
+      color: 0x222222,
+      roughness: 0.1
+    });
+    
+    // Eyes with pupils
+    for(let side of [-1, 1]) {
+      // Eye white
+      const eye = new THREE.Mesh(
+        new THREE.SphereGeometry(0.03, 8, 6),
+        eyeMat
+      );
+      eye.position.set(side * 0.05, 0.88, 0.13);
+      eye.scale.z = 0.5;
+      characterGroup.add(eye);
+      
+      // Pupil
+      const pupil = new THREE.Mesh(
+        new THREE.SphereGeometry(0.015, 6, 4),
+        pupilMat
+      );
+      pupil.position.set(side * 0.05, 0.88, 0.145);
+      characterGroup.add(pupil);
+      
+      // Eyebrow
+      const eyebrow = new THREE.Mesh(
+        new THREE.BoxGeometry(0.05, 0.01, 0.01),
+        new THREE.MeshStandardMaterial({ color: 0x333333 })
+      );
+      eyebrow.position.set(side * 0.05, 0.93, 0.14);
+      eyebrow.rotation.z = side * 0.2;
+      characterGroup.add(eyebrow);
+    }
+    
+    // Nose
+    const noseGeo = new THREE.ConeGeometry(0.02, 0.03, 4);
+    const nose = new THREE.Mesh(noseGeo, skinMat);
+    nose.position.set(0, 0.85, 0.15);
+    nose.rotation.x = Math.PI / 2;
+    characterGroup.add(nose);
+    
+    // Mouth
+    const mouthGeo = new THREE.TorusGeometry(0.02, 0.005, 3, 8, Math.PI);
+    const mouth = new THREE.Mesh(mouthGeo, 
+      new THREE.MeshStandardMaterial({ color: 0x883333 })
+    );
+    mouth.position.set(0, 0.8, 0.13);
+    mouth.rotation.z = Math.PI;
+    characterGroup.add(mouth);
+    
+    // Hair (random styles)
+    const hairStyle = Math.floor(Math.random() * 3);
+    const hairMat = new THREE.MeshStandardMaterial({ 
+      color: new THREE.Color().setHSL(Math.random() * 0.1, 0.3, 0.2 + Math.random() * 0.3),
+      roughness: 0.9
+    });
+    
+    if(hairStyle === 0) { // Short hair
+      const hair = new THREE.Mesh(
+        new THREE.SphereGeometry(0.16, 8, 6),
+        hairMat
+      );
+      hair.position.y = 0.9;
+      hair.scale.y = 0.6;
+      characterGroup.add(hair);
+    } else if(hairStyle === 1) { // Spiky hair
+      for(let i = 0; i < 5; i++) {
+        const spike = new THREE.Mesh(
+          new THREE.ConeGeometry(0.03, 0.08, 4),
+          hairMat
+        );
+        spike.position.set(
+          (i - 2) * 0.04,
+          0.97,
+          -0.05
+        );
+        spike.rotation.z = (i - 2) * 0.2;
+        characterGroup.add(spike);
+      }
+    } else { // Long hair
+      const hair = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.15, 0.18, 0.25, 8),
+        hairMat
+      );
+      hair.position.y = 0.85;
+      characterGroup.add(hair);
+    }
+    
+    // === ARMS (with joints) ===
+    for(let side of [-1, 1]) {
+      const armGroup = new THREE.Group();
+      armGroup.position.set(side * 0.3, 0.5, 0);
+      
+      // Upper arm
+      const upperArm = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.04, 0.05, 0.3, 8),
+        clothMat
+      );
+      upperArm.position.y = -0.15;
+      armGroup.add(upperArm);
+      
+      // Elbow joint
+      const elbow = new THREE.Mesh(
+        new THREE.SphereGeometry(0.04, 6, 4),
+        skinMat
+      );
+      elbow.position.y = -0.3;
+      armGroup.add(elbow);
+      
+      // Lower arm
+      const lowerArm = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.035, 0.04, 0.25, 8),
+        skinMat
+      );
+      lowerArm.position.y = -0.425;
+      armGroup.add(lowerArm);
+      
+      // Hand
+      const hand = new THREE.Mesh(
+        new THREE.BoxGeometry(0.08, 0.1, 0.04),
+        skinMat
+      );
+      hand.position.y = -0.6;
+      armGroup.add(hand);
+      
+      // Fingers
+      for(let i = 0; i < 4; i++) {
+        const finger = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.008, 0.008, 0.04, 4),
+          skinMat
+        );
+        finger.position.set((i - 1.5) * 0.015, -0.67, 0);
+        armGroup.add(finger);
+      }
+      
+      armGroup.userData = { side };
+      characterGroup.add(armGroup);
+    }
+    
+    // === LEGS (with realistic joints) ===
+    for(let side of [-1, 1]) {
+      const legGroup = new THREE.Group();
+      legGroup.position.set(side * 0.12, 0, 0);
+      
+      // Upper leg (thigh)
+      const thigh = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.06, 0.08, 0.4, 8),
+        clothMat
+      );
+      thigh.position.y = -0.2;
+      legGroup.add(thigh);
+      
+      // Knee
+      const knee = new THREE.Mesh(
+        new THREE.SphereGeometry(0.05, 6, 4),
+        skinMat
+      );
+      knee.position.y = -0.4;
+      legGroup.add(knee);
+      
+      // Lower leg (shin)
+      const shin = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.045, 0.055, 0.4, 8),
+        skinMat
+      );
+      shin.position.y = -0.6;
+      legGroup.add(shin);
+      
+      // Ankle
+      const ankle = new THREE.Mesh(
+        new THREE.SphereGeometry(0.04, 6, 4),
+        skinMat
+      );
+      ankle.position.y = -0.8;
+      legGroup.add(ankle);
+      
+      // Foot (shoe)
+      const shoe = new THREE.Mesh(
+        new THREE.BoxGeometry(0.12, 0.06, 0.2),
+        new THREE.MeshStandardMaterial({ 
+          color: 0x333333,
+          roughness: 0.8
+        })
+      );
+      shoe.position.set(0, -0.86, 0.05);
+      legGroup.add(shoe);
+      
+      legGroup.userData = { side };
+      characterGroup.add(legGroup);
+    }
+    
+    // === PART INDICATOR (on back) ===
+    if (player.part) {
+      const partIndicator = createRealisticPartMesh(player.part);
+      partIndicator.scale.set(0.12, 0.12, 0.12);
+      partIndicator.position.set(0, 0.4, -0.15);
+      characterGroup.add(partIndicator);
+      
+      // Backpack to hold the part
+      const backpack = new THREE.Mesh(
+        new THREE.BoxGeometry(0.2, 0.25, 0.1),
+        new THREE.MeshStandardMaterial({ 
+          color: 0x444444,
+          roughness: 0.7
+        })
+      );
+      backpack.position.set(0, 0.4, -0.12);
+      characterGroup.add(backpack);
+    }
+    
+    // === NAME PLATE (floating above) ===
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d')!;
+    
+    // Gradient background
+    const gradient = ctx.createLinearGradient(0, 0, 512, 0);
+    gradient.addColorStop(0, 'rgba(0,0,0,0.6)');
+    gradient.addColorStop(0.5, 'rgba(0,0,0,0.8)');
+    gradient.addColorStop(1, 'rgba(0,0,0,0.6)');
+    ctx.fillStyle = gradient;
+    ctx.roundRect(10, 10, 492, 108, 20);
+    ctx.fill();
+    
+    // Name text
+    ctx.fillStyle = 'white';
+    ctx.font = 'bold 48px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(player.name, 256, 50);
+    
+    // Role text
+    if (player.part === 'chassis') {
+      ctx.fillStyle = '#FFD700';
+      ctx.font = '32px Arial';
+      ctx.fillText('👑 القائد', 256, 85);
+    }
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    
+    const spriteMat = new THREE.SpriteMaterial({ 
+      map: texture,
+      depthTest: false,
+      depthWrite: false
+    });
+    const sprite = new THREE.Sprite(spriteMat);
+    sprite.scale.set(2, 0.5, 1);
+    sprite.position.y = 1.4;
+    characterGroup.add(sprite);
+    
+    return characterGroup;
+  };
+
   const createOtherPlayers = (scene: THREE.Scene) => {
-    console.log('Creating other players with improved models:', players);
+    console.log('Creating realistic characters for players:', players);
     
     // Clear existing
-    gameRefs.current.otherPlayers.forEach(group => scene.remove(group));
+    gameRefs.current.otherPlayers.forEach(data => {
+      if(data.mixer) data.mixer.stopAllAction();
+      scene.remove(data.group);
+    });
     gameRefs.current.otherPlayers.clear();
 
     players.forEach(player => {
       if (player.id !== SocketClient.id && player.isAlive) {
-        const playerGroup = new THREE.Group();
+        const character = createRealisticCharacter(player);
         
-        // Random color for this player
-        const playerColor = new THREE.Color().setHSL(Math.random(), 0.7, 0.5);
-        
-        // === BODY (Torso) ===
-        const bodyGeo = new THREE.BoxGeometry(0.5, 0.6, 0.25);
-        const bodyMat = new THREE.MeshStandardMaterial({ color: playerColor });
-        const body = new THREE.Mesh(bodyGeo, bodyMat);
-        body.position.y = 0.3;
-        body.castShadow = true;
-        playerGroup.add(body);
-        
-        // === HEAD ===
-        const headGeo = new THREE.SphereGeometry(0.2, 8, 6);
-        const headMat = new THREE.MeshStandardMaterial({ color: 0xffdbac });
-        const head = new THREE.Mesh(headGeo, headMat);
-        head.position.y = 0.85;
-        head.castShadow = true;
-        playerGroup.add(head);
-        
-        // Eyes
-        const eyeGeo = new THREE.SphereGeometry(0.03, 4, 4);
-        const eyeMat = new THREE.MeshStandardMaterial({ color: 0x000000 });
-        const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
-        leftEye.position.set(-0.06, 0.88, 0.18);
-        playerGroup.add(leftEye);
-        
-        const rightEye = new THREE.Mesh(eyeGeo, eyeMat);
-        rightEye.position.set(0.06, 0.88, 0.18);
-        playerGroup.add(rightEye);
-        
-        // === ARMS ===
-        const armGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.4);
-        const armMat = new THREE.MeshStandardMaterial({ color: playerColor });
-        
-        const leftArmGroup = new THREE.Group();
-        const leftArm = new THREE.Mesh(armGeo, armMat);
-        leftArm.position.y = -0.2;
-        leftArmGroup.add(leftArm);
-        leftArmGroup.position.set(-0.3, 0.5, 0);
-        playerGroup.add(leftArmGroup);
-        
-        const rightArmGroup = new THREE.Group();
-        const rightArm = new THREE.Mesh(armGeo, armMat);
-        rightArm.position.y = -0.2;
-        rightArmGroup.add(rightArm);
-        rightArmGroup.position.set(0.3, 0.5, 0);
-        playerGroup.add(rightArmGroup);
-        
-        // === LEGS WITH FEET ===
-        const upperLegGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.4);
-        const lowerLegGeo = new THREE.CylinderGeometry(0.07, 0.07, 0.4);
-        const legMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a });
-        
-        // Left leg
-        const leftLegGroup = new THREE.Group();
-        const leftUpperLeg = new THREE.Mesh(upperLegGeo, legMat);
-        leftUpperLeg.position.y = -0.2;
-        leftLegGroup.add(leftUpperLeg);
-        
-        const leftLowerLeg = new THREE.Mesh(lowerLegGeo, legMat);
-        leftLowerLeg.position.y = -0.6;
-        leftLegGroup.add(leftLowerLeg);
-        
-        // Left foot
-        const footGeo = new THREE.BoxGeometry(0.12, 0.06, 0.2);
-        const footMat = new THREE.MeshStandardMaterial({ color: 0x4a4a4a });
-        const leftFoot = new THREE.Mesh(footGeo, footMat);
-        leftFoot.position.set(0, -0.83, 0.05);
-        leftLegGroup.add(leftFoot);
-        
-        leftLegGroup.position.set(-0.12, 0, 0);
-        playerGroup.add(leftLegGroup);
-        
-        // Right leg
-        const rightLegGroup = new THREE.Group();
-        const rightUpperLeg = new THREE.Mesh(upperLegGeo, legMat);
-        rightUpperLeg.position.y = -0.2;
-        rightLegGroup.add(rightUpperLeg);
-        
-        const rightLowerLeg = new THREE.Mesh(lowerLegGeo, legMat);
-        rightLowerLeg.position.y = -0.6;
-        rightLegGroup.add(rightLowerLeg);
-        
-        // Right foot
-        const rightFoot = new THREE.Mesh(footGeo, footMat);
-        rightFoot.position.set(0, -0.83, 0.05);
-        rightLegGroup.add(rightFoot);
-        
-        rightLegGroup.position.set(0.12, 0, 0);
-        playerGroup.add(rightLegGroup);
-        
-        // === PART INDICATOR (Fixed to show correct shape) ===
-        if (player.part) {
-          const partIndicator = createCorrectPartMesh(player.part);
-          partIndicator.scale.set(0.15, 0.15, 0.15);
-          partIndicator.position.set(0, 0.3, 0.2);
-          playerGroup.add(partIndicator);
-        }
-        
-        // === NAME PLATE ===
-        const canvas = document.createElement('canvas');
-        canvas.width = 256;
-        canvas.height = 64;
-        const ctx = canvas.getContext('2d')!;
-        
-        const gradient = ctx.createLinearGradient(0, 0, 256, 0);
-        gradient.addColorStop(0, 'rgba(0,0,0,0.7)');
-        gradient.addColorStop(0.5, 'rgba(0,0,0,0.9)');
-        gradient.addColorStop(1, 'rgba(0,0,0,0.7)');
-        ctx.fillStyle = gradient;
-        ctx.fillRect(0, 0, 256, 64);
-        
-        ctx.fillStyle = 'white';
-        ctx.font = 'bold 28px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(player.name, 128, 25);
-        
-        if (player.part === 'chassis') {
-          ctx.fillStyle = '#FFD700';
-          ctx.font = '18px Arial';
-          ctx.fillText('👑 القائد', 128, 45);
-        }
-        
-        const texture = new THREE.CanvasTexture(canvas);
-        const spriteMat = new THREE.SpriteMaterial({ 
-          map: texture,
-          depthTest: false
-        });
-        const sprite = new THREE.Sprite(spriteMat);
-        sprite.scale.set(2, 0.5, 1);
-        sprite.position.y = 1.3;
-        playerGroup.add(sprite);
-        
-        // Set position
+        // Set initial position
         const pos = player.position || { 
           x: Math.random() * 10 - 5, 
-          y: 0.8, 
+          y: 0.86, 
           z: Math.random() * 10 - 5 
         };
-        playerGroup.position.set(pos.x, 0.85, pos.z);
+        character.position.set(pos.x, 0.86, pos.z);
         
-        scene.add(playerGroup);
-        gameRefs.current.otherPlayers.set(player.id, playerGroup);
+        scene.add(character);
+        gameRefs.current.otherPlayers.set(player.id, {
+          group: character,
+          mixer: character.userData.mixer,
+          walkCycle: 0,
+          isWalking: false,
+          lastPosition: { ...pos }
+        });
       }
     });
   };
@@ -475,11 +861,7 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
       const sensitivity = 0.002;
       playerState.current.rotation.y -= e.movementX * sensitivity;
       playerState.current.rotation.x -= e.movementY * sensitivity;
-      playerState.current.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, playerState.current.rotation.x));
-      
-      camera.rotation.order = 'YXZ';
-      camera.rotation.y = playerState.current.rotation.y;
-      camera.rotation.x = playerState.current.rotation.x;
+      playerState.current.rotation.x = Math.max(-Math.PI/3, Math.min(Math.PI/3, playerState.current.rotation.x));
     };
     
     document.addEventListener('mousemove', handleMouseMove);
@@ -502,6 +884,16 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
         case 'ArrowRight':
           playerState.current.keys.right = true;
           break;
+        case 'ShiftLeft':
+        case 'ShiftRight':
+          playerState.current.keys.shift = true;
+          break;
+        case 'Space':
+          if(playerState.current.isGrounded) {
+            playerState.current.velocity.y = 5;
+            playerState.current.isGrounded = false;
+          }
+          break;
       }
     };
     
@@ -523,6 +915,10 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
         case 'ArrowRight':
           playerState.current.keys.right = false;
           break;
+        case 'ShiftLeft':
+        case 'ShiftRight':
+          playerState.current.keys.shift = false;
+          break;
       }
     };
     
@@ -532,28 +928,21 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
 
   const setupSocketEvents = (scene: THREE.Scene) => {
     SocketClient.on('player-moved', ({ playerId, position, rotation }) => {
-      const playerGroup = gameRefs.current.otherPlayers.get(playerId);
-      if (playerGroup) {
-        playerGroup.position.lerp(new THREE.Vector3(position.x, 0.85, position.z), 0.3);
-        playerGroup.rotation.y = rotation.y;
+      const playerData = gameRefs.current.otherPlayers.get(playerId);
+      if (playerData) {
+        // Store last position for animation
+        playerData.lastPosition = { ...playerData.group.position };
         
-        // Walking animation
-        const isMoving = Math.abs(position.x - playerGroup.position.x) > 0.01 || 
-                        Math.abs(position.z - playerGroup.position.z) > 0.01;
+        // Smooth position interpolation
+        playerData.targetPosition = new THREE.Vector3(position.x, 0.86, position.z);
+        playerData.targetRotation = rotation.y;
         
-        if (isMoving) {
-          const time = Date.now() * 0.003;
-          const legSwing = Math.sin(time * 8) * 0.15;
-          const armSwing = Math.sin(time * 8) * 0.1;
-          
-          // Animate legs (indices 4 and 5)
-          if (playerGroup.children[4]) playerGroup.children[4].rotation.x = legSwing;
-          if (playerGroup.children[5]) playerGroup.children[5].rotation.x = -legSwing;
-          
-          // Animate arms (indices 2 and 3)
-          if (playerGroup.children[2]) playerGroup.children[2].rotation.x = -armSwing;
-          if (playerGroup.children[3]) playerGroup.children[3].rotation.x = armSwing;
-        }
+        // Check if moving for animation
+        const distance = Math.sqrt(
+          Math.pow(position.x - playerData.lastPosition.x, 2) + 
+          Math.pow(position.z - playerData.lastPosition.z, 2)
+        );
+        playerData.isWalking = distance > 0.01;
       }
     });
 
@@ -565,9 +954,10 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
     });
 
     SocketClient.on('player-left', ({ playerId }) => {
-      const playerGroup = gameRefs.current.otherPlayers.get(playerId);
-      if (playerGroup) {
-        scene.remove(playerGroup);
+      const playerData = gameRefs.current.otherPlayers.get(playerId);
+      if (playerData) {
+        if(playerData.mixer) playerData.mixer.stopAllAction();
+        scene.remove(playerData.group);
         gameRefs.current.otherPlayers.delete(playerId);
       }
     });
@@ -582,40 +972,164 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
     
     if (!camera) return;
     
-    // Update movement
-    const speed = 5;
+    // Realistic movement physics
     const keys = playerState.current.keys;
+    const baseSpeed = keys.shift ? 8 : 5; // Run or walk
+    const acceleration = 15;
+    const friction = 10;
     
+    // Calculate movement direction
     const moveX = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
     const moveZ = (keys.backward ? 1 : 0) - (keys.forward ? 1 : 0);
     
+    // Apply acceleration
     if (moveX !== 0 || moveZ !== 0) {
       const angle = Math.atan2(moveX, moveZ);
       const moveAngle = playerState.current.rotation.y + angle;
       
-      playerState.current.velocity.x = Math.sin(moveAngle) * speed * delta;
-      playerState.current.velocity.z = Math.cos(moveAngle) * speed * delta;
+      playerState.current.acceleration.x = Math.sin(moveAngle) * acceleration;
+      playerState.current.acceleration.z = Math.cos(moveAngle) * acceleration;
+      playerState.current.isWalking = true;
+    } else {
+      playerState.current.acceleration.x = 0;
+      playerState.current.acceleration.z = 0;
+      playerState.current.isWalking = false;
+    }
+    
+    // Update velocity with acceleration
+    playerState.current.velocity.x += playerState.current.acceleration.x * delta;
+    playerState.current.velocity.z += playerState.current.acceleration.z * delta;
+    
+    // Apply friction
+    playerState.current.velocity.x *= Math.pow(1 - friction * delta, 2);
+    playerState.current.velocity.z *= Math.pow(1 - friction * delta, 2);
+    
+    // Limit max speed
+    const currentSpeed = Math.sqrt(
+      playerState.current.velocity.x ** 2 + 
+      playerState.current.velocity.z ** 2
+    );
+    if (currentSpeed > baseSpeed) {
+      playerState.current.velocity.x = (playerState.current.velocity.x / currentSpeed) * baseSpeed;
+      playerState.current.velocity.z = (playerState.current.velocity.z / currentSpeed) * baseSpeed;
+    }
+    
+    // Apply gravity
+    if (!playerState.current.isGrounded) {
+      playerState.current.velocity.y -= 9.8 * delta;
+    }
+    
+    // Update position
+    playerState.current.position.x += playerState.current.velocity.x * delta;
+    playerState.current.position.z += playerState.current.velocity.z * delta;
+    playerState.current.position.y += playerState.current.velocity.y * delta;
+    
+    // Ground collision
+    if (playerState.current.position.y <= 1.6) {
+      playerState.current.position.y = 1.6;
+      playerState.current.velocity.y = 0;
+      playerState.current.isGrounded = true;
+    }
+    
+    // Boundary limits
+    playerState.current.position.x = Math.max(-14, Math.min(14, playerState.current.position.x));
+    playerState.current.position.z = Math.max(-14, Math.min(14, playerState.current.position.z));
+    
+    // Update camera position and rotation
+    camera.position.x = playerState.current.position.x;
+    camera.position.y = playerState.current.position.y;
+    camera.position.z = playerState.current.position.z;
+    
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = playerState.current.rotation.y;
+    camera.rotation.x = playerState.current.rotation.x;
+    
+    // Realistic walking bobbing
+    if (playerState.current.isWalking) {
+      playerState.current.walkCycle += currentSpeed * delta * 4;
+      const bobX = Math.sin(playerState.current.walkCycle) * 0.03;
+      const bobY = Math.abs(Math.sin(playerState.current.walkCycle * 2)) * 0.05;
       
-      playerState.current.position.x += playerState.current.velocity.x;
-      playerState.current.position.z += playerState.current.velocity.z;
+      camera.position.y += bobY;
+      camera.rotation.z = bobX * 0.5;
       
-      playerState.current.position.x = Math.max(-9, Math.min(9, playerState.current.position.x));
-      playerState.current.position.z = Math.max(-9, Math.min(9, playerState.current.position.z));
-      
-      camera.position.x = playerState.current.position.x;
-      camera.position.z = playerState.current.position.z;
-      
-      sendPositionUpdate();
-      
+      // Hand bobbing
       if (hand) {
-        const time = gameRefs.current.clock.getElapsedTime();
-        hand.position.y = -0.3 + Math.sin(time * 10) * 0.02;
+        hand.position.x = bobX * 2;
+        hand.position.y = -0.3 + bobY;
+        hand.rotation.z = bobX;
+      }
+    } else {
+      // Smooth return to neutral
+      camera.rotation.z *= 0.95;
+      if (hand) {
+        hand.position.x *= 0.95;
+        hand.position.y = -0.3 + Math.sin(gameRefs.current.clock.getElapsedTime() * 2) * 0.01;
       }
     }
     
-    // Check nearby players for proximity voice
+    // Animate other players with realistic walking
+    gameRefs.current.otherPlayers.forEach((playerData, playerId) => {
+      // Smooth position interpolation
+      if (playerData.targetPosition) {
+        playerData.group.position.lerp(playerData.targetPosition, 0.15);
+      }
+      
+      // Smooth rotation
+      if (playerData.targetRotation !== undefined) {
+        const currentY = playerData.group.rotation.y;
+        const diff = playerData.targetRotation - currentY;
+        playerData.group.rotation.y += diff * 0.15;
+      }
+      
+      // Walking animation
+      if (playerData.isWalking) {
+        playerData.walkCycle += delta * 6;
+        const walkPhase = playerData.walkCycle;
+        
+        // Animate legs
+        const legs = playerData.group.children.filter(child => 
+          child.userData && child.userData.side !== undefined && 
+          child.position.y === 0
+        );
+        
+        legs.forEach((leg, index) => {
+          const side = leg.userData.side;
+          leg.rotation.x = Math.sin(walkPhase + side * Math.PI) * 0.5;
+        });
+        
+        // Animate arms
+        const arms = playerData.group.children.filter(child => 
+          child.userData && child.userData.side !== undefined && 
+          child.position.y > 0
+        );
+        
+        arms.forEach((arm, index) => {
+          const side = arm.userData.side;
+          arm.rotation.x = Math.sin(walkPhase - side * Math.PI) * 0.3;
+        });
+        
+        // Body bob
+        playerData.group.position.y = 0.86 + Math.abs(Math.sin(walkPhase * 2)) * 0.02;
+      } else {
+        // Idle animation (breathing)
+        const breathe = Math.sin(gameRefs.current.clock.getElapsedTime() * 2) * 0.01;
+        playerData.group.position.y = 0.86 + breathe;
+      }
+      
+      // Update animation mixer if exists
+      if (playerData.mixer) {
+        playerData.mixer.update(delta);
+      }
+    });
+    
+    // Check nearby players
     checkNearbyPlayers();
     
+    // Send position update
+    sendPositionUpdate();
+    
+    // Render scene
     if (gameRefs.current.renderer && gameRefs.current.scene) {
       gameRefs.current.renderer.render(gameRefs.current.scene, camera);
     }
@@ -626,10 +1140,10 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
     
     const playerPos = gameRefs.current.camera.position;
     let closest: any = null;
-    let minDistance = 3; // Max distance for voice chat
+    let minDistance = 3;
     
-    gameRefs.current.otherPlayers.forEach((group, id) => {
-      const distance = playerPos.distanceTo(group.position);
+    gameRefs.current.otherPlayers.forEach((data, id) => {
+      const distance = playerPos.distanceTo(data.group.position);
       if (distance < minDistance) {
         minDistance = distance;
         const playerData = players.find(p => p.id === id);
@@ -641,10 +1155,6 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
     
     setNearbyPlayer(closest);
     
-    // Send nearby player update to parent component
-    SocketClient.emit('nearby-player-update', closest);
-    
-    // Send proximity info to voice chat
     if (closest) {
       SocketClient.emit('proximity-voice', {
         roomId,
@@ -656,7 +1166,8 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
 
   const sendPositionUpdate = () => {
     const now = Date.now();
-    if (!playerState.current.lastUpdate || now - playerState.current.lastUpdate > 50) {
+    if (playerState.current.isWalking && 
+        (!playerState.current.lastUpdate || now - playerState.current.lastUpdate > 50)) {
       SocketClient.emit('player-move', {
         roomId,
         position: playerState.current.position,
@@ -681,6 +1192,9 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
     if (gameRefs.current.animationId) {
       cancelAnimationFrame(gameRefs.current.animationId);
     }
+    gameRefs.current.otherPlayers.forEach(data => {
+      if(data.mixer) data.mixer.stopAllAction();
+    });
     if (gameRefs.current.renderer && mountRef.current) {
       mountRef.current.removeChild(gameRefs.current.renderer.domElement);
       gameRefs.current.renderer.dispose();
@@ -707,34 +1221,50 @@ export default function Game3D({ roomId, playerName, playerPart, players, isLead
       
       {!isLocked && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-          <div className="bg-black/50 text-white px-6 py-3 rounded-lg text-center">
-            <p className="text-xl font-bold mb-2">انقر لبدء اللعب</p>
-            <p className="text-sm">WASD للحركة - Mouse للنظر</p>
+          <div className="bg-black/70 backdrop-blur text-white px-6 py-4 rounded-xl text-center">
+            <p className="text-2xl font-bold mb-3">🎮 انقر لبدء اللعب</p>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <div>⬆️ W - للأمام</div>
+              <div>⬇️ S - للخلف</div>
+              <div>⬅️ A - يسار</div>
+              <div>➡️ D - يمين</div>
+              <div>🏃 Shift - الجري</div>
+              <div>🦘 Space - القفز</div>
+              <div>🖱️ Mouse - النظر</div>
+              <div>🎤 V - التحدث الخاص</div>
+            </div>
           </div>
         </div>
       )}
       
       <div className="absolute top-4 left-4 pointer-events-none">
-        <div className="bg-black/50 backdrop-blur text-white p-4 rounded-lg">
+        <div className="bg-black/60 backdrop-blur text-white p-4 rounded-xl">
           <p className="text-xl font-bold">{playerName}</p>
-          <p>{getPartName(playerPart)}</p>
+          <p className="text-sm">{getPartName(playerPart)}</p>
           {isLeader && <p className="text-yellow-400">👑 القائد</p>}
+          {playerState.current.keys.shift && (
+            <p className="text-green-400 text-xs animate-pulse">🏃 جري سريع</p>
+          )}
         </div>
       </div>
       
       {nearbyPlayer && (
         <div className="absolute bottom-24 left-1/2 transform -translate-x-1/2 pointer-events-none">
-          <div className="bg-green-500/80 text-white px-4 py-2 rounded-lg animate-pulse">
-            <p className="text-sm">🎤 قريب من: {nearbyPlayer.name}</p>
-            <p className="text-xs">المسافة: {nearbyPlayer.distance.toFixed(1)}م - اضغط V للتحدث معه فقط</p>
+          <div className="bg-gradient-to-r from-green-500/80 to-emerald-600/80 backdrop-blur text-white px-6 py-3 rounded-xl animate-pulse shadow-xl">
+            <p className="text-sm font-bold">🎤 قريب من: {nearbyPlayer.name}</p>
+            <p className="text-xs">المسافة: {nearbyPlayer.distance.toFixed(1)}م</p>
+            <p className="text-xs mt-1">اضغط واستمر V للمحادثة الخاصة</p>
           </div>
         </div>
       )}
       
       {isLocked && (
         <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 pointer-events-none">
-          <div className="w-8 h-0.5 bg-white"></div>
-          <div className="w-0.5 h-8 bg-white absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2"></div>
+          <div className="relative">
+            <div className="w-10 h-0.5 bg-white/80 shadow-lg"></div>
+            <div className="w-0.5 h-10 bg-white/80 absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 shadow-lg"></div>
+            <div className="w-4 h-4 border-2 border-white/50 rounded-full absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2"></div>
+          </div>
         </div>
       )}
     </div>

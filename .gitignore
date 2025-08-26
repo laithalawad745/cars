@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Next.js build files
+.next/
+out/
+
+# Production build
+build/
+dist/
+
+# Next.js cache and static files
+.next/static/chunks/
+.next/cache/
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Lock files (اختياري - بعض المطورين يرفعونها)
+package-lock.json
+yarn.lock
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
